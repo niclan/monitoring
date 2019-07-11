@@ -1,0 +1,60 @@
+#!/bin/bash
+
+# The nagios check_ide_smart plugin wants to know which device to
+# check.  If you have servers with various disks and not just /dev/sda
+# this can be a drag.
+#
+# If you just want to check "whatever" disks are present this plugin helps.
+#
+# Requires:
+# - smartmon-tools for the smartctl command
+# - Nagios plugin check_ide_smart
+#
+# (C)opyright Nicolai Langfeldt 2019 janl@langfeldt.net
+#
+# License: GPLv2
+
+# Smartctl helps because:
+# # smartctl --scan
+# /dev/sda -d scsi # /dev/sda, SCSI device
+# /dev/sdb -d scsi # /dev/sdb, SCSI device
+# /dev/sdc -d scsi # /dev/sdc, SCSI device
+# /dev/sdd -d scsi # /dev/sdd, SCSI device
+# /dev/sde -d scsi # /dev/sde, SCSI device
+# /dev/sdf -d scsi # /dev/sdf, SCSI device
+# /dev/sdg -d scsi # /dev/sdg, SCSI device
+# /dev/sdh -d scsi # /dev/sdh, SCSI device
+
+MYPATH=${0%/*}
+
+. $MYPATH/utils.sh
+
+DRIVES="$(/usr/sbin/smartctl --scan | while read drive rest; do echo $drive; done)"
+
+WORST=0
+
+for d in $DRIVES; do
+   OUT="$($MYPATH/check_ide_smart $d)"
+   E=$?
+   
+   if [ $E -gt $WORST ] ; then
+       WORST=$E
+   fi
+   
+   case $E in
+       0) :;; # All ok
+       1) WARN="$WARN $OUT";;
+       2) CRITICAL="$CRITICAL $OUT";;
+       3) # "unknown". Broken disk?
+	  WORST=$STATE_CRITICAL;;
+       4) # "dependent". Nonsensical to us
+	  :;;
+   esac
+done
+
+case $WORST in
+    0) echo "OK - All drives OK:" $DRIVES; exit $STATE_OK;;
+    1) echo $WARN;            exit $WORST;;
+    2) echo $CRITICAL $WARN;  exit $WORST;;
+    *) echo "INTERNAL ERROR"; exit $STATE_UNKOWN;;
+esac
