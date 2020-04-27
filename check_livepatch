@@ -1,0 +1,111 @@
+#!/bin/sh
+#
+# Copyright (C) 2017, Canonical Ltd
+# License: GPL-3.0
+#
+# Nagios check for ubuntu livepatch based on
+# /etc/update-motd.d/80-livepatch from the ubuntu-advantage-tools
+# package. Reworked by Nicolai Langfeldt (janl@langfeldt.net) 2019.
+#
+# Can run as any user.
+
+STATE_OK=0
+STATE_WARNING=1
+STATE_CRITICAL=2
+STATE_UNKNOWN=3
+STATE_DEPENDENT=4
+
+UA=${UA:-"/usr/bin/ubuntu-advantage"}
+UA_STATUS_CACHE=${UA_STATUS_CACHE:-"/var/cache/ubuntu-advantage-tools/ubuntu-advantage-status.cache"}
+
+[ -x "$UA" ] || {
+    echo "OK: Liveupdate is not available on this host. Install ubuntu-advantage-tools."
+    exit $STATE_OK
+}
+
+print_patch_state() {
+    local patch_state="$1"
+
+    case "$patch_state" in
+        unapplied)
+            echo "OK. Patches are available, will be deployed shortly."
+	    exit $STATE_OK
+            ;;
+        applied)
+            echo "OK. All available patches applied."
+	    exit $STATE_OK
+            ;;
+        applied-with-bug|apply-failed)
+            echo "Warning: Live patching failed, please run \`ubuntu-bug linux\` to report a bug."
+	    exit $STATE_WARNING
+            ;;
+        nothing-to-apply)
+            echo "OK: All available patches applied."
+	    exit $STATE_OK
+            ;;
+        applying)
+            echo "OK: Live patching currently in progress."
+	    exit $STATE_UK
+            ;;
+        *)
+            echo "UNKNOWN: patch status. Please see /var/log/syslog for more information. Status: \"$patch_state\""
+	    
+            ;;
+    esac
+}
+
+print_status() {
+    local check_state="$1"
+    local patch_state="$2"
+
+    case "$check_state" in
+        needs-check)
+            echo "OK: Regular server check is pending."
+	    exit $STATE_OK
+            ;;
+        check-failed)
+	    echo "WARN: Livepatch server check failed. Please see /var/log/syslog for more information."
+	    exit $STATE_WARNING
+            ;;
+        checked)
+            print_patch_state "$patch_state"
+            ;;
+        *)
+            echo "UNKNOWN: Unknown check status. Please see /var/log/syslog for more information. Status: \"$check_state\""
+	    echo $STATE_UNKNOWN
+            ;;
+    esac
+}
+
+
+service_name="livepatch"
+# if there is no cache file yet (the cron job hasn't run yet), bail
+[ -s "$UA_STATUS_CACHE" ] || exit 0
+ua_status=$(cat "$UA_STATUS_CACHE")
+# if there is no livepatch section at all in the output, silently
+# bail
+has_livepatch=$(echo "${ua_status}" | grep "^${service_name}")
+[ -n "${has_livepatch}" ] || exit 0
+livepatch_status=$(echo "$ua_status"|grep ^${service_name}:|sed -r -n "s,^${service_name}: (.*)$,\\1,p")
+# only look for patchState and checkState inside the specific service
+# block in the status output
+patch_state=$(echo "$ua_status"|sed -r -n "/^${service_name}:/,/^\\S/s,^[[:blank:]]+patchState: (.*)$,\\1,p")
+check_state=$(echo "$ua_status"|sed -r -n "/^${service_name}:/,/^\\S/s,^[[:blank:]]+checkState: (.*)$,\\1,p")
+
+case "$livepatch_status" in
+    "disabled (not available)")
+        echo "WARN: Live patching is disabled/uavailable."
+	exit $STATE_WARNING
+        ;;
+    "enabled")
+        print_status "${check_state}" "${patch_state}"
+        ;;
+    "disabled")
+        echo "OK: Live patching is not enabled on this host"
+	echo $STATE_OK
+        ;;
+    *)
+        echo "UNKNOWN: Canonical Livepatch is in an unknown state. Please see /var/log/syslog for more information. Status: \"$livepatch_status\""
+	echo $STATE_UNKOWN
+        ;;
+esac
